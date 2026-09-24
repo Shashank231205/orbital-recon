@@ -47,3 +47,8 @@ outputs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Generated sample scenes; rebuild with scripts/fetch_samples.py
+samples/*
+!samples/README.md
+!samples/.gitkeep
