@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Build stage: install everything into a venv, so the runtime stage needs no
+# compiler toolchain and carries none of pip's build artifacts. rasterio,
+# pyproj and opencv all ship manylinux wheels, but a source fallback would
+# otherwise drag build-essential into the shipped image.
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# build-essential covers any sdist fallback (e.g. an arch without a wheel).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# The project is installed into a venv that is copied wholesale into the
+# runtime stage; this keeps the two stages' Python trees identical.
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# CPU-only torch. The default PyPI torch wheel bundles the CUDA runtime and
+# adds several GB to the image. Installing from the CPU index first pins the
+# CPU build, so the later `pip install .` resolves torch/torchvision as already
+# satisfied. For GPU deployments, build from an nvidia/cuda base image
+# (e.g. nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04) and drop this step so
+# the CUDA wheels are used instead; also set DETECTION_DEVICE=cuda.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu \
+    "torch>=2.4.0" "torchvision>=0.19.0"
+
+COPY backend/pyproject.toml ./backend/pyproject.toml
+COPY backend/src ./backend/src
+
+RUN pip install ./backend
+
+# ---------------------------------------------------------------------------
+# Runtime stage
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# opencv-python-headless still links libGL and libglib even though it draws no
+# windows; rasterio's bundled GDAL needs libexpat for its XML metadata readers.
+# curl is only here for the HEALTHCHECK below.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libexpat1 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+
+# Non-root: the service writes only to /data, which is a mounted volume. If the
+# process is ever compromised through an uploaded image, it cannot modify its
+# own code or the installed packages.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin orbital \
+    && mkdir -p /data/raw /data/processed /data/models \
+               /data/.ultralytics /data/.matplotlib \
+    && chown -R orbital:orbital /data
+
+# Installed rather than run from a checkout, so the configured data directory
+# would default to one under the working directory. Point it at the mounted
+# volume explicitly; the remaining paths derive from it.
+ENV DATA_DIR=/data
+
+# DETECTOR_WEIGHTS defaults to the bare name "yolov8s-obb.pt", which Ultralytics
+# resolves by downloading into the process's working directory. WORKDIR /data
+# therefore puts the weights on the volume, so the download happens once rather
+# than on every container start. Ultralytics also writes a settings file and a
+# config cache; both are redirected onto the volume so the non-root user is not
+# writing into the image.
+ENV YOLO_CONFIG_DIR=/data/.ultralytics \
+    MPLCONFIGDIR=/data/.matplotlib
+
+WORKDIR /data
+USER orbital
+
+EXPOSE 8000
+
+# Matches api_prefix ("/api/v1") + the health router's "/health".
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1
+
+CMD ["uvicorn", "orbital_recon.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

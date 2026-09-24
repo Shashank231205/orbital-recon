@@ -1,0 +1,60 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+.github
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node -- node_modules is reinstalled from package-lock.json inside the image,
+# and a host copy would be the wrong platform's binaries.
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Secrets. The backend reads its .env through compose's env_file at run time,
+# so it must never be baked into an image layer.
+.env
+.env.*
+!.env.example
+
+# Data, model weights and sample imagery: large, and regenerated or downloaded
+# at run time into the mounted volume.
+data/
+samples/
+*.pt
+*.onnx
+*.engine
+*.tif
+*.tiff
+*.npy
+
+# Runtime artifacts
+*.db
+*.sqlite3
+logs/
+*.log
+runs/
+mlruns/
+outputs/
+
+# Docs and local tooling
+docs/
+scripts/
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

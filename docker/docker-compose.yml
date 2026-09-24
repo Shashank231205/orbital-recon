@@ -1,0 +1,51 @@
+# Build context is the repository root for both images, because the backend
+# Dockerfile copies from backend/ and the frontend one from frontend/ and
+# docker/.
+#
+# Usage, from this directory:  docker compose up --build
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    # ../backend/.env is gitignored. Create it before the first run:
+    #   cp backend/.env.example backend/.env
+    # and fill in GEMINI_API_KEY and/or GROQ_API_KEY -- either one is enough
+    # for the intelligence endpoints; detection works without both.
+    env_file:
+      - ../backend/.env
+    environment:
+      # Overrides whatever .env carries, so the container never points at a
+      # host path that does not exist inside the image. Uploads, weights and
+      # the database all derive from this one setting.
+      DATA_DIR: /data
+      # The browser talks to the frontend's origin and nginx proxies /api, so
+      # requests reach FastAPI same-origin. This entry only covers hitting the
+      # backend port directly during debugging.
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+      # No GPU in this compose file; "auto" would probe for one on every run.
+      DETECTION_DEVICE: cpu
+    volumes:
+      # Holds the SQLite database, uploaded scenes and downloaded YOLO weights.
+      # Named rather than bind-mounted so the non-root container user owns it.
+      - orbital-data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    depends_on:
+      backend:
+        # Waits for the backend's HEALTHCHECK, not just for the container to
+        # start, so the first page load does not hit a 502 from the proxy.
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  orbital-data:
