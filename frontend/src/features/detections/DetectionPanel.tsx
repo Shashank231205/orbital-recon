@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+import { InfoHint } from "@/components/InfoHint";
 import { ThreatBadge, threatColor } from "@/components/Indicators";
 import type { Detection, JobSummary, ThreatLevel } from "@/types/api";
 
@@ -30,7 +31,14 @@ export function DetectionPanel({ summary, detections, selectedId, onSelect }: Pr
   return (
     <>
       <div className="card">
-        <h2>Findings</h2>
+        <h2>
+          Findings
+          <InfoHint>
+            Counts after overlapping tile detections were merged. Priority comes
+            from the asset class, not from the model: a moderately confident
+            aircraft outranks a highly confident swimming pool.
+          </InfoHint>
+        </h2>
 
         {!summary || summary.total_detections === 0 ? (
           <p className="empty" style={{ padding: "12px 0" }}>
@@ -44,6 +52,9 @@ export function DetectionPanel({ summary, detections, selectedId, onSelect }: Pr
               </span>
               <span className="mono dim">
                 mean {(summary.mean_confidence * 100).toFixed(1)}%
+                <InfoHint>
+                  Average confidence across every detection in this run.
+                </InfoHint>
               </span>
             </div>
 
@@ -72,7 +83,13 @@ export function DetectionPanel({ summary, detections, selectedId, onSelect }: Pr
       {detections.length > 0 && (
         <div className="card">
           <div className="spread" style={{ marginBottom: 10 }}>
-            <h2 style={{ marginBottom: 0 }}>Targets</h2>
+            <h2 style={{ marginBottom: 0 }}>
+              Targets
+              <InfoHint>
+                Ordered by confidence. Select one to see its dimensions, heading
+                and position, and to highlight it in the scene.
+              </InfoHint>
+            </h2>
             <span className="mono dim">{visible.length}</span>
           </div>
 

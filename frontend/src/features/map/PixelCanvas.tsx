@@ -5,6 +5,11 @@
  * drawn over the source image using their oriented box corners. The canvas is
  * scaled to fit while preserving aspect ratio, and box coordinates are scaled
  * by the same factor so overlays stay aligned at any display size.
+ *
+ * Labels are drawn only when a detection is large enough on screen to carry
+ * one, or when it is selected. A dense harbour scene holds hundreds of
+ * overlapping vessels, and labelling every one turns the image into a wall of
+ * text that hides the imagery underneath.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -17,13 +22,58 @@ interface Props {
   detections: Detection[];
   selectedId: number | null;
   onSelect: (id: number) => void;
+  showLabels: boolean;
 }
 
 const MAX_EDGE = 1400;
 
-export function PixelCanvas({ imageUrl, detections, selectedId, onSelect }: Props) {
+/** Minimum on-screen box width, in pixels, before a label is drawn. */
+const LABEL_MIN_WIDTH = 46;
+
+const LABEL_FONT = "600 11px ui-sans-serif, system-ui, sans-serif";
+
+interface Placed {
+  detection: Detection;
+  points: [number, number][];
+}
+
+function drawLabel(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  colour: string,
+): void {
+  context.font = LABEL_FONT;
+  const width = context.measureText(text).width;
+  const paddingX = 4;
+  const height = 15;
+
+  // Keep the label inside the canvas when the box sits against an edge.
+  const left = Math.max(1, Math.min(x, context.canvas.width - width - paddingX * 2 - 1));
+  const top = y - height < 1 ? y + 2 : y - height;
+
+  context.fillStyle = "rgba(11, 15, 20, 0.82)";
+  context.fillRect(left, top, width + paddingX * 2, height);
+
+  context.fillStyle = colour;
+  context.fillRect(left, top, 2, height);
+
+  context.fillStyle = "#e6edf3";
+  context.textBaseline = "middle";
+  context.fillText(text, left + paddingX + 2, top + height / 2);
+}
+
+export function PixelCanvas({
+  imageUrl,
+  detections,
+  selectedId,
+  onSelect,
+  showLabels,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const placedRef = useRef<Placed[]>([]);
   const [scale, setScale] = useState(1);
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -63,35 +113,67 @@ export function PixelCanvas({ imageUrl, detections, selectedId, onSelect }: Prop
 
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
+    const placed: Placed[] = [];
+
+    // Outlines first, so no box is drawn over a label.
     for (const detection of detections) {
-      const corners = detection.box.corners;
-      if (corners.length < 4) {
+      if (detection.box.corners.length < 4) {
         continue;
       }
 
+      const points = detection.box.corners.map(
+        ([x, y]) => [x * scale, y * scale] as [number, number],
+      );
+      placed.push({ detection, points });
+
       const isSelected = detection.id === selectedId;
+      const colour = threatColor(detection.threat_level);
+
       context.beginPath();
-      corners.forEach(([x, y], index) => {
-        const px = x * scale;
-        const py = y * scale;
+      points.forEach(([x, y], index) => {
         if (index === 0) {
-          context.moveTo(px, py);
+          context.moveTo(x, y);
         } else {
-          context.lineTo(px, py);
+          context.lineTo(x, y);
         }
       });
       context.closePath();
 
-      context.strokeStyle = threatColor(detection.threat_level);
+      context.strokeStyle = colour;
       context.lineWidth = isSelected ? 3 : 1.5;
       context.stroke();
 
       if (isSelected) {
-        context.fillStyle = `${threatColor(detection.threat_level)}55`;
+        context.fillStyle = `${colour}55`;
         context.fill();
       }
     }
-  }, [detections, isLoaded, scale, selectedId]);
+
+    placedRef.current = placed;
+
+    if (!showLabels) {
+      return;
+    }
+
+    for (const { detection, points } of placed) {
+      const xs = points.map(([x]) => x);
+      const ys = points.map(([, y]) => y);
+      const boxWidth = Math.max(...xs) - Math.min(...xs);
+      const isSelected = detection.id === selectedId;
+
+      if (!isSelected && boxWidth < LABEL_MIN_WIDTH) {
+        continue;
+      }
+
+      drawLabel(
+        context,
+        `${detection.class_name} ${(detection.confidence * 100).toFixed(0)}%`,
+        Math.min(...xs),
+        Math.min(...ys),
+        threatColor(detection.threat_level),
+      );
+    }
+  }, [detections, isLoaded, scale, selectedId, showLabels]);
 
   function handleClick(event: React.MouseEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
@@ -101,24 +183,38 @@ export function PixelCanvas({ imageUrl, detections, selectedId, onSelect }: Prop
 
     // The canvas is laid out with CSS max-width, so its rendered size can
     // differ from its backing size; both factors are needed to recover the
-    // original image coordinate that was clicked.
+    // canvas coordinate that was clicked.
     const rect = canvas.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) * (canvas.width / rect.width)) / scale;
-    const y = ((event.clientY - rect.top) * (canvas.height / rect.height)) / scale;
+    const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (event.clientY - rect.top) * (canvas.height / rect.height);
 
-    const hit = detections.find((detection) => {
-      const xs = detection.box.corners.map(([cx]) => cx);
-      const ys = detection.box.corners.map(([, cy]) => cy);
-      return (
+    // Smallest match wins: in a dense scene a click often lands inside several
+    // overlapping boxes, and the tightest one is what the eye is pointing at.
+    let best: Placed | null = null;
+    let bestArea = Infinity;
+
+    for (const candidate of placedRef.current) {
+      const xs = candidate.points.map(([px]) => px);
+      const ys = candidate.points.map(([, py]) => py);
+      const inside =
         x >= Math.min(...xs) &&
         x <= Math.max(...xs) &&
         y >= Math.min(...ys) &&
-        y <= Math.max(...ys)
-      );
-    });
+        y <= Math.max(...ys);
 
-    if (hit) {
-      onSelect(hit.id);
+      if (!inside) {
+        continue;
+      }
+
+      const area = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+      if (area < bestArea) {
+        best = candidate;
+        bestArea = area;
+      }
+    }
+
+    if (best) {
+      onSelect(best.detection.id);
     }
   }
 
