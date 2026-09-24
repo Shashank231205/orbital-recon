@@ -4,14 +4,34 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
     SettingsConfigDict,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+def _default_data_dir() -> Path:
+    """Locate the directory for uploads, weights and the database.
+
+    Walking up from this module only works while the package is used from a
+    source checkout. Once installed normally it lives under ``site-packages``,
+    where the equivalent ancestor is somewhere inside the virtual environment,
+    so writes would land in the installation rather than beside the project.
+
+    A checkout is therefore detected explicitly, and anything else falls back to
+    a directory under the working directory. Either can be overridden with
+    ``DATA_DIR``.
+    """
+    module_path = Path(__file__).resolve()
+
+    # <root>/backend/src/orbital_recon/core/config.py
+    checkout_root = module_path.parents[4]
+    if (checkout_root / "backend" / "pyproject.toml").is_file():
+        return checkout_root / "data"
+
+    return Path.cwd() / "data"
 
 
 class Settings(BaseSettings):
@@ -29,11 +49,12 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
 
-    database_url: str = "sqlite+aiosqlite:///./orbital_recon.db"
+    database_url: str = ""
 
-    data_dir: Path = PROJECT_ROOT / "data"
-    upload_dir: Path = PROJECT_ROOT / "data" / "raw"
-    model_dir: Path = PROJECT_ROOT / "data" / "models"
+    data_dir: Path = Field(default_factory=_default_data_dir)
+    # Both default to positions under data_dir; see _derive_paths.
+    upload_dir: Path = Path()
+    model_dir: Path = Path()
 
     # Detection
     detector_weights: str = "yolov8s-obb.pt"
@@ -71,7 +92,28 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @model_validator(mode="after")
+    def _derive_paths(self) -> "Settings":
+        """Fill in paths that default to positions under ``data_dir``.
+
+        Deriving them here rather than at field definition means overriding
+        ``DATA_DIR`` alone moves the uploads, weights and database together,
+        instead of silently leaving them behind at the old location.
+        """
+        if self.upload_dir == Path():
+            self.upload_dir = self.data_dir / "raw"
+        if self.model_dir == Path():
+            self.model_dir = self.data_dir / "models"
+        if not self.database_url:
+            # An absolute path, so the database does not move with the working
+            # directory the process happened to start in.
+            self.database_url = (
+                f"sqlite+aiosqlite:///{(self.data_dir / 'orbital_recon.db').as_posix()}"
+            )
+        return self
+
     def ensure_directories(self) -> None:
+        """Create the directories the service writes into."""
         for directory in (self.data_dir, self.upload_dir, self.model_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
