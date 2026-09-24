@@ -1,6 +1,7 @@
 """Tests for scene ingestion."""
 
 import io
+import re
 from pathlib import Path
 
 import numpy as np
@@ -77,7 +78,7 @@ class TestReadDimensions:
         path = tmp_path / "a1b2c3.png"
         path.write_bytes(b"not an image")
 
-        with pytest.raises(ValidationError, match="harbour-survey.png"):
+        with pytest.raises(ValidationError, match=re.escape("harbour-survey.png")):
             read_dimensions(path, "harbour-survey.png")
 
 
