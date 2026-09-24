@@ -132,12 +132,18 @@ class AnalysisPipeline:
         job_id: int,
         loop: asyncio.AbstractEventLoop,
     ) -> list[tuple[RawDetection, int, int]]:
-        """Run tiled inference, reporting tile progress back to the event loop."""
+        """Run tiled inference, reporting tile progress back to the event loop.
+
+        Each update is awaited before the next batch starts. Scheduling without
+        waiting would let the caller advance to a later stage while a tile
+        update is still queued, which reaches the client as progress moving
+        backwards.
+        """
         low, high = _INFERENCE_SPAN
 
         def on_progress(done: int, total: int) -> None:
             fraction = low + (high - low) * (done / max(total, 1))
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._publish(
                     job_id,
                     JobStage.INFERENCE,
@@ -146,6 +152,7 @@ class AnalysisPipeline:
                 ),
                 loop,
             )
+            future.result()
 
         return self._get_detector().detect(image, on_progress=on_progress)
 

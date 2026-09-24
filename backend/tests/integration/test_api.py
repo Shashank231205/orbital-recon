@@ -105,8 +105,9 @@ async def upload(client: AsyncClient, filename: str = "scene.png") -> dict:
     return response.json()
 
 
-async def wait_for_completion(client: AsyncClient, job_id: int) -> dict:
-    """Follow the progress stream until the job reaches a terminal state."""
+async def collect_stream(client: AsyncClient, job_id: int) -> list[dict]:
+    """Return every progress update a job emits, in arrival order."""
+    updates: list[dict] = []
     async with client.stream("GET", f"{API}/jobs/{job_id}/stream") as response:
         assert response.status_code == 200
         async for line in response.aiter_lines():
@@ -114,9 +115,15 @@ async def wait_for_completion(client: AsyncClient, job_id: int) -> dict:
                 continue
 
             update = json.loads(line[6:])
+            updates.append(update)
             if update["status"] in ("completed", "failed"):
-                return update
+                return updates
     raise AssertionError("stream ended before the job reached a terminal state")
+
+
+async def wait_for_completion(client: AsyncClient, job_id: int) -> dict:
+    """Follow the progress stream until the job reaches a terminal state."""
+    return (await collect_stream(client, job_id))[-1]
 
 
 class TestHealth:
@@ -189,6 +196,20 @@ class TestJobLifecycle:
         assert body["status"] == "completed"
         assert body["stage"] == "done"
         assert body["duration_ms"] is not None
+
+    async def test_progress_never_moves_backwards(self, client: AsyncClient) -> None:
+        """Stage updates must arrive in order.
+
+        Inference reports progress from a worker thread; if those updates are
+        scheduled without being awaited, a later stage can overtake them and
+        the client sees the bar jump back.
+        """
+        job_id = (await upload(client))["job"]["id"]
+
+        updates = await collect_stream(client, job_id)
+        values = [update["progress"] for update in updates]
+
+        assert values == sorted(values), f"progress went backwards: {values}"
 
     async def test_unknown_job_returns_not_found(self, client: AsyncClient) -> None:
         response = await client.get(f"{API}/jobs/99999")
