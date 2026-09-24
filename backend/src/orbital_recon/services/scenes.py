@@ -69,11 +69,16 @@ def store_upload(content: bytes, suffix: str, upload_dir: Path) -> Path:
     return path
 
 
-def read_dimensions(path: Path) -> tuple[int, int]:
+def read_dimensions(path: Path, display_name: str | None = None) -> tuple[int, int]:
     """Return ``(width, height)`` of a stored scene.
 
     Dimensions come from the file header rather than a decode, so measuring a
     large scene costs no more than a small one.
+
+    Args:
+        path: Location of the stored file.
+        display_name: Name to use in errors. Stored files carry a generated
+            name, which is meaningless to the person who uploaded them.
 
     Raises:
         ValidationError: If the file is not a readable image.
@@ -82,7 +87,9 @@ def read_dimensions(path: Path) -> tuple[int, int]:
         with Image.open(path) as image:
             return image.width, image.height
     except (UnidentifiedImageError, OSError) as exc:
-        raise ValidationError(f"Could not read image: {path.name}") from exc
+        raise ValidationError(
+            f"Could not read image: {display_name or path.name}"
+        ) from exc
 
 
 def build_scene(
@@ -91,8 +98,20 @@ def build_scene(
     modality: Modality,
     size_bytes: int,
 ) -> Scene:
-    """Create a scene record from a stored upload."""
-    width, height = read_dimensions(stored_path)
+    """Create a scene record from a stored upload.
+
+    Removes the stored file if it turns out to be unreadable, so a rejected
+    upload does not accumulate on disk.
+
+    Raises:
+        ValidationError: If the stored file is not a readable image.
+    """
+    try:
+        width, height = read_dimensions(stored_path, original_filename)
+    except ValidationError:
+        stored_path.unlink(missing_ok=True)
+        raise
+
     context = read_geo_context(stored_path)
 
     scene = Scene(
