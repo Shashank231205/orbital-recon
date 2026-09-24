@@ -2,10 +2,14 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    SettingsConfigDict,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
@@ -21,7 +25,9 @@ class Settings(BaseSettings):
     environment: Literal["development", "production", "test"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     api_prefix: str = "/api/v1"
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:5173"]
+    )
 
     database_url: str = "sqlite+aiosqlite:///./orbital_recon.db"
 
@@ -39,18 +45,28 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 512 * 1024 * 1024
 
     # LLM providers, tried in the listed order.
-    llm_provider_order: list[str] = Field(default_factory=lambda: ["gemini", "groq"])
+    llm_provider_order: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["gemini", "groq"]
+    )
     llm_timeout_seconds: float = 20.0
     llm_health_ttl_seconds: float = 60.0
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.0-flash"
+    # Alias rather than a pinned version, so the default does not go stale
+    # as providers retire individual model releases.
+    gemini_model: str = "gemini-flash-latest"
     groq_api_key: str | None = None
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
 
     @field_validator("cors_origins", "llm_provider_order", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
-        """Allow comma-separated values so .env files stay readable."""
+        """Parse comma-separated list values.
+
+        These fields are marked ``NoDecode`` because pydantic-settings would
+        otherwise try to JSON-decode any list-typed field before validators
+        run, which rejects the plain ``a,b`` form that is natural in a .env
+        file.
+        """
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value

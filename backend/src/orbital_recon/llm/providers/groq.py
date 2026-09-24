@@ -5,6 +5,7 @@ import time
 import httpx
 
 from orbital_recon.core.exceptions import LLMProviderError
+from orbital_recon.core.tls import create_ssl_context
 from orbital_recon.llm.base import ChatMessage, CompletionResult, LLMProvider
 
 _BASE_URL = "https://api.groq.com/openai/v1"
@@ -21,6 +22,7 @@ class GroqProvider(LLMProvider):
         self._client = httpx.AsyncClient(
             base_url=_BASE_URL,
             timeout=timeout,
+            verify=create_ssl_context(),
             headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
         )
 

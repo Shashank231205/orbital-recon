@@ -5,6 +5,7 @@ import time
 import httpx
 
 from orbital_recon.core.exceptions import LLMProviderError
+from orbital_recon.core.tls import create_ssl_context
 from orbital_recon.llm.base import ChatMessage, CompletionResult, LLMProvider
 
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -22,7 +23,9 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str | None, model: str, timeout: float = 20.0) -> None:
         self._api_key = api_key
         self._model = model
-        self._client = httpx.AsyncClient(base_url=_BASE_URL, timeout=timeout)
+        self._client = httpx.AsyncClient(
+            base_url=_BASE_URL, timeout=timeout, verify=create_ssl_context()
+        )
 
     @property
     def is_configured(self) -> bool:
